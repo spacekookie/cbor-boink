@@ -9,9 +9,11 @@ prost-build = "0.5"
 
 [dependencies]
 bytes = "0.4"
-miel = { git = "https://gitlab.com/twittner/miel.git" }
+miel = { git = "https://gitlab.com/twittner/miel.git", features = ["serde"] }
 parity-scale-codec = "1.0.5"
 parity-scale-codec-derive = "1.0.2"
 prost = "0.5"
 rand = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_cbor = "0.10.1"
 

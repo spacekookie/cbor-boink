@@ -2,13 +2,14 @@ use parity_scale_codec::Encode;
 use parity_scale_codec_derive::{Encode, Decode};
 use prost::Message;
 use rand::prelude::*;
+use serde::{Serialize, Deserialize};
 
 mod protobuf {
     include!(concat!(env!("OUT_DIR"), "/protobuf.rs"));
 }
 
 /// Our example type we are going to serialise;
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)]
 pub struct Sample {
     field_a: u32,
     field_b: u64,
@@ -18,7 +19,7 @@ pub struct Sample {
     field_f: Vec<u8>
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)]
 pub enum SomeEnum {
     One(u8),
     Two(u16),
@@ -26,7 +27,7 @@ pub enum SomeEnum {
     Four(String)
 }
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)]
 pub struct SomeOtherStruct {
     field_a: Option<bool>,
     field_b: Vec<String>
@@ -56,7 +57,7 @@ fn gen() -> Sample {
         field_e: SomeOtherStruct {
             field_a: rng.gen(),
             field_b: {
-                let n = rng.gen_range(0, 2048);
+                let n = rng.gen_range(0, 256);
                 let mut v = Vec::with_capacity(n);
                 for _ in 0 .. n {
                     v.push(gen_string(&mut rng))
@@ -77,6 +78,8 @@ fn gen() -> Sample {
 pub struct Lengths {
     scale: usize,
     cbor: usize,
+    cbor_serde_miel: usize,
+    cbor_serde: usize,
     protobuf: usize
 }
 
@@ -111,6 +114,13 @@ fn encode() -> Result<Lengths, Box<dyn std::error::Error>> {
         .u8(6)?.bytes(&x.field_f)?;
         w
     };
+    let ms = {
+        let mut w = Vec::new();
+        let mut s = miel::serde::ser::Serializer::new(&mut w);
+        x.serialize(&mut s)?;
+        w
+    };
+    let cs = serde_cbor::ser::to_vec_packed(&x)?;
     let p = {
         let s = protobuf::Sample {
             field_a: x.field_a,
@@ -137,6 +147,8 @@ fn encode() -> Result<Lengths, Box<dyn std::error::Error>> {
     Ok(Lengths {
         scale: s.len(),
         cbor: c.len(),
+        cbor_serde_miel: ms.len(),
+        cbor_serde: cs.len(),
         protobuf: p.len()
     })
 }
@@ -144,6 +156,20 @@ fn encode() -> Result<Lengths, Box<dyn std::error::Error>> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let x = encode()?;
-    println!("SCALE = {} bytes\nCBOR  = {} bytes\nPROTO = {} bytes", x.scale, x.cbor, x.protobuf);
+    println!("\
+            SCALE             = {} bytes (1)\n\
+            CBOR              = {} bytes ({})\n\
+            Protocol Buffers  = {} bytes ({})\n\
+            CBOR (serde)      = {} bytes ({})\n\
+            CBOR (serde miel) = {} bytes ({})",
+        x.scale,
+        x.cbor,
+        x.cbor as f32 / x.scale as f32,
+        x.protobuf,
+        x.protobuf as f32 / x.scale as f32,
+        x.cbor_serde_miel,
+        x.cbor_serde_miel as f32 / x.scale as f32,
+        x.cbor_serde,
+        x.cbor_serde as f32 / x.scale as f32);
     Ok(())
 }
