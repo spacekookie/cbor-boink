@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package protobuf;
+
+message Sample {
+    uint32 field_a = 1;
+    uint64 field_b = 2;
+    string field_c = 3;
+    SomeEnum field_d = 4;
+    SomeOtherStruct field_e = 5;
+    bytes field_f = 6;
+}
+
+message SomeEnum {
+    oneof some_enum {
+        uint32 one = 1;
+        uint32 two = 2;
+        uint64 three = 3;
+        string four = 4;
+    }
+}
+
+message SomeOtherStruct {
+    bool field_a = 1;
+    repeated string field_b = 2;
+}
