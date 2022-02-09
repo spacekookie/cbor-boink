@@ -1,175 +1,107 @@
-use parity_scale_codec::Encode;
-use parity_scale_codec_derive::{Encode, Decode};
-use prost::Message;
-use rand::prelude::*;
+use minicbor::{Encode, Decode};
+use rand::{Rng, RngCore, rngs::ThreadRng};
+use rand::distributions::{Alphanumeric, Standard};
 use serde::{Serialize, Deserialize};
+use std::iter;
 
-mod protobuf {
-    include!(concat!(env!("OUT_DIR"), "/protobuf.rs"));
-}
+/// Limits for sample size generation
+const TINY: usize = 8;
+const SMALL: usize = 32;
+const MEDIUM: usize = 128;
+const LARGE: usize = 512;
 
 /// Our example type we are going to serialise;
 #[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)]
-pub struct Sample {
-    field_a: u32,
-    field_b: u64,
-    field_c: String,
-    field_d: SomeEnum,
-    field_e: SomeOtherStruct,
-    field_f: Vec<u8>
+struct Sample {
+    #[n(0)] field_a: u32,
+    #[n(1)] field_b: u64,
+    #[n(2)] field_c: String,
+    #[n(3)] field_d: SomeEnum,
+    #[n(4)] field_e: SomeOtherStruct,
+    #[n(5)] field_f: Vec<u16>,
+    #[cbor(n(6), with = "minicbor::bytes")] field_g: Vec<u8>
 }
 
 #[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)]
-pub enum SomeEnum {
-    One(u8),
-    Two(u16),
-    Three(u64),
-    Four(String)
+enum SomeEnum {
+    #[n(0)] One(#[n(0)] u8),
+    #[n(1)] Two(#[n(0)] u16),
+    #[n(2)] Three(#[n(0)] u64),
+    #[n(3)] Four(#[n(0)] String),
+    #[n(4)] Five(#[n(0)] Vec<Sample>)
 }
 
 #[derive(Debug, Clone, Encode, Decode, Serialize, Deserialize)]
-pub struct SomeOtherStruct {
-    field_a: Option<bool>,
-    field_b: Vec<String>
+struct SomeOtherStruct {
+    #[n(0)] field_a: Option<bool>,
+    #[n(1)] field_b: Vec<String>,
+    #[n(2)] field_c: Vec<Sample>
 }
 
 /// Generate a random sample.
-fn gen() -> Sample {
-    fn gen_string(rng: &mut impl Rng) -> String {
-        let n = rng.gen_range(0, 2048);
-        rng.sample_iter(rand::distributions::Alphanumeric)
+fn gen(rng: &mut ThreadRng, max: usize, rem: usize) -> Sample {
+    fn gen_string(max: usize, rng: &mut impl Rng) -> String {
+        let n = rng.gen_range(0 .. max);
+        iter::repeat_with(|| char::from(rng.sample(Alphanumeric)))
             .take(n)
             .collect()
     }
-
-    let mut rng = rand::thread_rng();
-
     Sample {
         field_a: rng.gen(),
         field_b: rng.gen(),
-        field_c: gen_string(&mut rng),
-        field_d: match rng.gen_range(0, 4) {
+        field_c: gen_string(max, rng),
+        field_d: match rng.gen_range(0 .. 5) {
             0 => SomeEnum::One(rng.gen()),
             1 => SomeEnum::Two(rng.gen()),
             2 => SomeEnum::Three(rng.gen()),
-            _ => SomeEnum::Four(gen_string(&mut rng))
+            3 => SomeEnum::Four(gen_string(max, rng)),
+            _ => SomeEnum::Five({
+                let n = rng.gen_range(0 .. rem);
+                iter::repeat_with(|| gen(rng, max, rem - 1)).take(n).collect()
+            })
         },
         field_e: SomeOtherStruct {
             field_a: rng.gen(),
             field_b: {
-                let n = rng.gen_range(0, 256);
-                let mut v = Vec::with_capacity(n);
-                for _ in 0 .. n {
-                    v.push(gen_string(&mut rng))
-                }
-                v
+                let n = rng.gen_range(0 .. max);
+                iter::repeat_with(|| gen_string(max, rng)).take(n).collect()
+            },
+            field_c: {
+                let n = rng.gen_range(0 .. rem);
+                iter::repeat_with(|| gen(rng, max, rem - 1)).take(n).collect()
             }
         },
         field_f: {
-            let n = rng.gen_range(0, 2048);
-            rng.sample_iter(rand::distributions::Standard)
-                .take(n)
-                .collect()
+            let n = rng.gen_range(0 .. max);
+            rng.sample_iter(Standard).take(n).collect()
+        },
+        field_g: {
+            let mut v = vec![0; rng.gen_range(0 .. max)];
+            rng.fill_bytes(&mut v);
+            v
         }
     }
 }
 
-#[derive(Debug)]
-pub struct Lengths {
-    scale: usize,
-    cbor: usize,
-    cbor_serde_miel: usize,
-    cbor_serde: usize,
-    protobuf: usize
-}
-
 /// A single encoding round.
-fn encode() -> Result<Lengths, Box<dyn std::error::Error>> {
-    let x = gen();
-    let s = x.encode();
-    let c = {
-        use miel::write::Encoder;
-        let mut w = Vec::new();
-        let mut e = Encoder::new(&mut w);
-        e.object(6)?
-            .u8(1)?.u32(x.field_a)?
-            .u8(2)?.u64(x.field_b)?
-            .u8(3)?.str(&x.field_c)?
-            .u8(4)?;
-        match &x.field_d {
-            SomeEnum::One(v)   => e.u8(1)?.u8(*v)?,
-            SomeEnum::Two(v)   => e.u8(2)?.u16(*v)?,
-            SomeEnum::Three(v) => e.u8(3)?.u64(*v)?,
-            SomeEnum::Four(v)  => e.u8(4)?.str(v)?
-        };
-        e.u8(5)?.object(2)?
-            .u8(1)?.option(&x.field_e.field_a, |e, b| {
-                e.bool(*b)?;
-                Ok(())
-            })?
-            .u8(2)?.vector(&x.field_e.field_b, |e, s| {
-                e.str(s)?;
-                Ok(())
-            })?
-        .u8(6)?.bytes(&x.field_f)?;
-        w
+fn encode(size: usize, label: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut g = rand::thread_rng();
+    let samp = gen(&mut g, size, 7);
+    let cbor = minicbor::to_vec(&samp)?.len();
+    let bare = serde_bare::to_vec(&samp)?.len();
+    let bare_to_cbor = (bare as f64 / cbor as f64) * 100.0;
+    let cbor_to_bare = (cbor as f64 / bare as f64) * 100.0;
+    println! {
+        ">>> {label}\n\
+         BARE = {bare} bytes ({bare_to_cbor:6.2}%)\n\
+         CBOR = {cbor} bytes ({cbor_to_bare:6.2}%)"
     };
-    let ms = {
-        let mut w = Vec::new();
-        let mut s = miel::serde::ser::Serializer::new(&mut w);
-        x.serialize(&mut s)?;
-        w
-    };
-    let cs = serde_cbor::ser::to_vec_packed(&x)?;
-    let p = {
-        let s = protobuf::Sample {
-            field_a: x.field_a,
-            field_b: x.field_b,
-            field_c: x.field_c,
-            field_d: Some(protobuf::SomeEnum {
-                some_enum: Some(match x.field_d {
-                    SomeEnum::One(v) => protobuf::some_enum::SomeEnum::One(u32::from(v)),
-                    SomeEnum::Two(v) => protobuf::some_enum::SomeEnum::Two(u32::from(v)),
-                    SomeEnum::Three(v) => protobuf::some_enum::SomeEnum::Three(v),
-                    SomeEnum::Four(v) => protobuf::some_enum::SomeEnum::Four(v)
-                })
-            }),
-            field_e: Some(protobuf::SomeOtherStruct {
-                field_a: x.field_e.field_a.unwrap_or(false),
-                field_b: x.field_e.field_b
-            }),
-            field_f: x.field_f
-        };
-        let mut v = Vec::new();
-        s.encode(&mut v)?;
-        v
-    };
-    Ok(Lengths {
-        scale: s.len(),
-        cbor: c.len(),
-        cbor_serde_miel: ms.len(),
-        cbor_serde: cs.len(),
-        protobuf: p.len()
-    })
+    Ok(())
 }
-
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let x = encode()?;
-    println!("\
-            SCALE             = {} bytes (1)\n\
-            CBOR              = {} bytes ({})\n\
-            Protocol Buffers  = {} bytes ({})\n\
-            CBOR (serde)      = {} bytes ({})\n\
-            CBOR (serde miel) = {} bytes ({})",
-        x.scale,
-        x.cbor,
-        x.cbor as f32 / x.scale as f32,
-        x.protobuf,
-        x.protobuf as f32 / x.scale as f32,
-        x.cbor_serde_miel,
-        x.cbor_serde_miel as f32 / x.scale as f32,
-        x.cbor_serde,
-        x.cbor_serde as f32 / x.scale as f32);
-    Ok(())
+    encode(TINY, "TINY")?;
+    encode(SMALL, "SMALL")?;
+    encode(MEDIUM, "MEDIUM")?;
+    encode(LARGE, "LARGE")
 }
