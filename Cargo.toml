@@ -1,7 +1,6 @@
 [package]
 name    = "encoding-size"
 version = "0.1.0"
-authors = ["Toralf Wittner <tw@dtex.org>"]
 edition = "2021"
 
 [dependencies]
